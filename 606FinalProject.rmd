@@ -1,0 +1,308 @@
+---
+title: "606 Final Project - Mushroom Data Analysis"
+author: "Chunmei Zhu"
+date: "December 9, 2017"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+### Accuracy of Classifications  
+
+Mushroom records drawn from The Audubon Society Field Guide to North American Mushrooms (1981). G. H. Lincoff (Pres.), New York: Alfred A. Knopf. 
+
+Research question :Which attribute is the most accurcy in predictive classifier of poisonous or edible?
+
+Data is available online here: https://archive.ics.uci.edu/ml/machine-learning-databases/mushroom/agaricus-lepiota.data 
+
+
+```{r}
+#download required packages
+suppressWarnings(suppressMessages(library(RCurl)))  #read url to R
+suppressWarnings(suppressMessages(library(plyr)))   #split-apply-combine paradigm
+suppressWarnings(suppressMessages(library(psych)))  #Summary Statisitcs by Group
+suppressWarnings(suppressMessages(library(stringr)))#read string value
+suppressWarnings(suppressMessages(library(dplyr)))  #data manipulation
+suppressWarnings(suppressMessages(library(tidyr)))  #spread and gather functions
+suppressWarnings(suppressMessages(library(ggplot2)))
+suppressWarnings(suppressMessages(library(rpart)))
+suppressWarnings(suppressMessages(library(mlbench)))
+suppressWarnings(suppressMessages(library(e1071)))
+```
+
+###The Data
+
+In this data set, there are 8124 obervations corresponding to 22 attribustes. Each row represents a gilled mushroom sample in the Agaricus and Lepiota Family in the united states. It has been classified by shape, color, smell, population, ring,and habitat. 
+
+The response variables is v1 "classes"" by poisonous (p) or edible (e) and it is categorical.The explanatory variables are independent variables and in this case presentes as following and they are categorival.
+
+```{r}
+#get raw data from a url
+url_mushroom <- getURL('https://archive.ics.uci.edu/ml/machine-learning-databases/mushroom/agaricus-lepiota.data')
+
+#store raw data in a data frame 
+rawData <- data.frame(read.csv(text=url_mushroom, header=FALSE),sep="'")
+
+summary(rawData) #review raw data
+```
+
+###Data clearing
+
+Here I rename the column names and remove last column which is 'NA' then rename the cleared data set as df.
+
+```{r }
+#Change colunm names for attributes
+names(rawData) <- c("classes","cap_shape","cap_surface","cap_color","bruises","odor","gill_attachment","gill_spacing"
+                     ,"gill_size","gill_color","stalk_shape","stalk_root","stalk_surface_above_ring",
+                     "stalk_surface_below_ring","stalk_color_above_ring","stalk_color_below_ring",
+                     "veil_type","veil_color","ring_number","ring_type","spore_print_color","population","habitat")
+
+#remove last column 'NA'
+df <-rawData[,1:(dim(rawData)[2]-1)]
+
+#change values in classes
+levels(df$classes) [levels(df$classes)=="p"]  <- "poisonous"
+levels(df$classes) [levels(df$classes)=="e"]  <- "edible"
+```
+
+###Classification: Disjunctive Rules
+
+There are few famous disjunctive rules for poisonous mushrooms, from most generalto most specific:
+
+1. odor=NOT(almond.OR.anise.OR.none) -> odor=(creosote=c,fishy=y,foul=f,musty=m,pungent=p,spicy=s)
+(120 poisonous cases missed, 98.52% accuracy)
+
+```{r }
+odor_cyfmps <- df %>% filter(odor!="a"|odor!="s"|odor!="n"|classes =="p") %>% select(classes, odor)
+
+ftable(odor_cyfmps)
+
+#calculate the accuracy
+total <- nrow(odor_cyfmps) #Numerical sample size of subset odor
+print( 1- 120/total) #Prop. of edible in odor method
+
+
+qplot(df$odor, data = odor_cyfmps, fill= df$classes)
+```
+
+2. odor=none.AND.stalk-surface-below-ring=scaly.AND.(stalk-color-above-ring=NOT.brown)
+(80 cases missed, 97.21% accuracy)
+
+```{r }
+odor_stalkFaceBelow_stalkColAbove <-df %>% filter(odor=="n"& stalk_surface_below_ring=="s"&stalk_color_above_ring!="b") %>% select(classes,odor,stalk_surface_below_ring,stalk_color_above_ring)%>%filter(odor=="n")
+
+ftable(odor_stalkFaceBelow_stalkColAbove)
+
+#calculate the accuracy while 80 cases missed
+total <- nrow(odor_stalkFaceBelow_stalkColAbove) #Numerical sample size of subset odor
+print( 1- 80/total) #Prop. of edible in odor method
+```
+
+3. habitat=leaves.AND.cap-color=white
+(100% accuracy) -> two empty sets in edible and poisonous
+
+```{r }
+hab_capCol <- df%>% filter (habitat=="l" & cap_color=="w") %>% select(classes,habitat,cap_color)
+ftable(hab_capCol)
+
+library ('ggplot2')
+qplot(habitat=="l",cap_color=="w", data = hab_capCol, fill=classes,color=classes)
+```
+
+
+###Classification: Machine Learning
+
+Now I want to know whether a computer can classify a mushroom edible or poisonous base on what it learns from the data set. What's more, what kind of modle can predete well to edible mushroom? 
+
+Here, I use Decision Tree classification and Naive Bayes classification to do the predetion.Then, I concent on ediable predetion and compare accuracy of these two models.
+
+```{r}
+#generate random seeds to get reproducible data set for two preditive models 
+seeds<-sample(1:9999999, 100, replace=FALSE)
+
+#Both models include all 22 attribustes to cospond the classes variable
+#x:	A numeric matrix, or a data frame of categorical
+#y:	Class vector
+#setup predicted fomular: y~x
+frmla = classes~ cap_shape+cap_surface+cap_color+bruises+odor+gill_attachment+gill_spacing+             gill_size+gill_color+stalk_shape+stalk_root+stalk_surface_above_ring+stalk_surface_below_ring+stalk_color_above_ring+stalk_color_below_ring+veil_type+veil_color+ring_number+ring_type+spore_print_color+population+habitat
+```
+
+###1.Decision Tree model
+"Decision tree models allow you to develop classification systems that predict or classify future observations based on a set of decision rules." - IBM Knowledge Center
+
+```{r}
+#Conditional Inference Tree via PARTY package
+suppressWarnings(suppressMessages(library(party)))
+ 
+ct = ctree(frmla, data = df)
+plot(ct, main="Conditional Inference Tree")
+ 
+#Table of prediction errors
+table(predict(ct), df$classes)
+ 
+# Estimated class probabilities
+tr.pred = predict(ct, newdata=df, type="prob")
+```
+
+
+###2. Naive Bayes Classification
+
+"Naïve Bayes (NB) based on applying Bayes' theorem (from probability theory) with strong (naive) independence assumptions. It is particularly suited when the dimensionality of the inputs is high. Naive Bayes classifiers can handle an arbitrary number of independent variables whether continuous or categorical."
+
+In this analysis, X is the predictors and C is the set of categorical levels present in the dependent variable.
+  variables set:X={x1,x2,....,x22} for 22 atrributes
+  possible outcomes of training set: C ={c1, c2}  #editable and poisonous
+
+Bayes' rule: posterior probability
+p(C|x1,x2,...x22) = p(C)*p(x1,x2,...,x22|C)/ p(x1,x2,...x22)
+                  = p(C)*p(x1|C)p(x2|C)...p(x22|C)
+                  
+To label new cases in test set F with a class level Ci that achieves the highest posterior probability: 
+classify(F1,...Fd) = argmaxp(C=c)p(C)*p(x1=F1|C=c)p(x2=F2|C=c)...p(x22=F22|C=c)
+
+
+Naïve Bayes algorithm and code references:
+https://en.wikibooks.org/wiki/Data_Mining_Algorithms_In_R/Classification/Na%C3%AFve_Bayes
+
+```{r}
+classifier<-naiveBayes(df[,2:23], df[,1])
+table(predict(classifier, df[,-23]), df[,1])
+```
+
+
+###3. Sampling and testing
+
+Both models use condition probability to predict the same test sets which were randomly picked 100 times 20% observations from the clear data set.To add some challenge to these two models, I was simply sampling 100 difference seeds to generate 100 pairs of training data set and testing data set. 
+
+In both predetive models, I randomly split the clear data set by "80-20" rule - 80% data as a training set and 20% data as testing set. 
+
+```{r}
+accuracy_edible_tree <- c() #pecentage of right  predition of editable from test set for tree model
+accuracy_edible_nb <- c() #pecentage of right  predition of editable from  test set for NB model
+conf_matrix_tree_list <-list() #confusion matrix of tree model
+conf_matrix_nb_list <-list()  #confusion matrix of Naive Bayes
+
+
+for(i in 1:length(seeds) ){
+  
+#generate random test set and training set from the clear data set
+  
+  set.seed(seeds[i]) #get reproducible test set for both models
+
+  #add flag: 20% data with "1" as testing set, 80% with "0"  as training set
+  df[,'test'] <- ifelse(runif(nrow(df)) <= 0.2,1,0) 
+  
+
+  #split testing set and training set
+  testSet <- df %>% filter(test=='1') 
+  trainSet <- df %>% filter(test=='0')
+  
+  #count percentage of edible in both sets
+  test_eat <-testSet %>% filter(classes=="edible")
+  train_eat <-trainSet %>% filter(classes=="edible")
+  
+  #get column index of train flag
+  train_ColNum <- grep('test',names(trainSet))
+
+  #remove flag from testSet and trainSet
+  testSet <-testSet[,1:(dim(testSet)[2]-1)]
+  
+  trainSet <-testSet[,1:(dim(trainSet)[2]-1)]
+
+  #get column index of predicted varialbe in cleared data set
+  class_ColNum <- grep('classes', names(df))
+
+#Decision Tree model
+  
+  #complexity factor set to .0001
+  tree_modle = rpart(frmla,method="class",data=trainSet, control = rpart.control(cp = .001))
+  #test on testSet data
+  tree_pred = predict(tree_modle, testSet, type='class')
+  #Decision Tree Confusion Matrix
+  conf_matrix_tree<-table(tree_pred, testSet$classes)
+  conf_matrix_tree_list[[i]] <-conf_matrix_tree
+  #errorI = P( p(poisonous in edible)| p(edible) )
+  accuracy_edible_tree[i] =1 - conf_matrix_tree[1,2]/sum(conf_matrix_tree[1,])
+
+  
+#Naive Bayes Classification
+  nb_model <- naiveBayes(frmla, data = trainSet)
+  #test on testSet data
+  nb_pred<-predict(nb_model,testSet)
+  #NB_conf_matrix
+  conf_matrix_nb<- table(nb_pred, testSet$classes)
+  conf_matrix_nb_list[[i]] <-conf_matrix_nb
+  #errorI = P( p(poisonous in edible)| p(edible) )
+  accuracy_edible_nb[i] =1 - conf_matrix_nb[1,2]/sum(conf_matrix_nb[1,])
+  
+}
+
+#output confusion matrix 
+write.csv(conf_matrix_tree_list,file="D:/CUNY_SPS_DA/606_Statistic_in_R/606 Project/confMatrix_Tree.txt" )
+write.csv(conf_matrix_nb_list,file="D:/CUNY_SPS_DA/606_Statistic_in_R/606 Project/confMatrix_nb.txt" )
+
+```
+
+###4. Accuracy Comparison: Decision Tree vs Naive Bayes
+
+Now I have 100 accuracy probabilities prediting editable mushroom for each model.I want to look for which is the better model in the predition. 
+
+The mean of the accuracy of predition from tree modle (accuracy_edible_tree) approximate to 100% and is higher than the one from naive bayses modle (accuracy_edible_nb).The min of the accuracy of Tree modelis also higher than the max of the accuracy of Naive Bayes model.
+
+```{r}
+test_result <-as.data.frame(cbind(accuracy_edible_nb,accuracy_edible_tree))
+colnames(test_result) <- c("accuracy_edible_nb","accuracy_edible_tree")
+#summary(test_result)
+describe(test_result)
+
+#histograms of frequency of accuracy
+hist(accuracy_edible_nb,xlim=c(0.85,1),ylim=c(0,35),breaks=10,labels=rep("nb"),col=rgb(1,1,0,0.7),main="Accuracy of Edible Predition",xlab="accuracy_edible_predition")
+par(new=TRUE)
+hist(accuracy_edible_tree,xlim=c(0.85,1),ylim=c(0,35),breaks=5,labels=rep("tr"),col=rgb(0,1,1,0.4),main="",xlab="",ylab="")
+
+#boxplot data set
+long_test_result <- gather(test_result, model, accuracy, accuracy_edible_nb:accuracy_edible_tree, factor_key=TRUE)
+
+boxplot(long_test_result$accuracy ~ long_test_result$model, main=" Editable Predition Accuracy by Decision Tree vs Naive Bayes ")
+```
+
+
+###5.Hypothysis test
+
+t-test: two means difference  
+
+Since t-test is sensible to non-normality, I need to evaluate the accuracy data from tree and Naive Bayes. The accuracy data from both preditive modles are nearly normal where the points that tend to the lines but with some errant points towards the tails.
+
+```{r}
+#tree data
+qqnorm(accuracy_edible_tree)
+qqline(accuracy_edible_tree)
+
+#naive bayes data
+qqnorm(accuracy_edible_nb)
+qqline(accuracy_edible_nb)
+
+```
+
+Assume the mean of accuracy from two models aren't difference. To test where these prediton has significan difference, I use t test since the population variances are unknown, choose 95% confident interal as critial point.
+
+Ho: the mean of accuracy of Naisve Bayes is no difference to Decision Tree's
+Ha: the mean of accuracy of Naisve Bayes is difference Decision Tree's
+
+The p-value of Student's t distribution with (100 + 100 -2) degrees of freedom, one-tail model with 95% confident interval is approximated to 0. -> Reject Ho, the mean of accuracy from Tree model and Naive Bayes modle has a significan difference.
+
+```{r}
+tree_mean <- mean(accuracy_edible_tree)
+nb_mean <- mean(accuracy_edible_nb)
+tree_var <- var(accuracy_edible_tree)
+nb_var <- var(accuracy_edible_nb)
+tree_num <- 100
+nb_num <- 100
+
+t = (0 - (tree_mean - nb_mean))/sqrt(tree_var/100 +nb_var/100)
+2*pt(-abs(t),df=tree_num+nb_num-2)
+```
+
